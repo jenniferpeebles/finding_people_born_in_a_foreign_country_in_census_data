@@ -1,0 +1,252 @@
+---
+title: "Find People Born in a Certain Foreign Country in Census Data"
+author: "Jennifer Peebles-The Atlanta Journal-Constitution"
+date: "`r format(Sys.time(), '%b. %d, %Y')`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+library(digest)
+library(dplyr)
+library(grid)
+library(knitr)
+library(magrittr)
+library(stringr)
+library(swirl)
+library(tidycensus)
+library(tidyverse)
+
+# You should put in your Census API key here in line below
+# census_api_key("your_Census_API_key_goes_here_between_the_quote_marks")
+# You can also install it with these attributes but I'll leave this commented-out in case you prefer not to set these attributes.
+# census_api_key("your_Census_API_key_goes_here_between_quote_marks", install=TRUE, overwrite=TRUE)
+
+# This seems to pop up in every new R Markdown script I create. So I just left it there. 
+knitr::opts_chunk$set(echo = TRUE)
+
+# This will round off everything to 1 digit
+options(digits=1)
+
+# This will prevent R from expressing very large or very small numbers in scientific notation. This probably won't be an issue in this script but I always try to set this anyhow. 
+options(scipen = 999)
+
+```
+
+```{r setup_our_working_directory, eval=TRUE, echo=FALSE, include=FALSE}
+
+# If you want to clear out all the variables in your R workspace, I like to do this, you don't have to. I've left this item commented-out for now. 
+#  rm(list=ls()) 
+
+# Show my working directory
+getwd()
+
+# If you want to change your working directory, you can do it here. Paste in your file path between these quote marks first ... But I'll otherwise leave this commented-out.
+#base_wd <- "Paste/In/Your/File/Path/Here/And/Dont/Forget/to/Switch/Your/Backslashes/to/Forwardslashes/or/Else/R/Cant/Read/It"
+
+# And this next line would actually change your working directory to whatever you've stored in base_wd. 
+# setwd(base_wd)
+
+# Show my working directory to make sure it has updated to the new folder. 
+getwd()
+
+```
+
+```{r start_with_variables, include=FALSE, eval=TRUE, echo=FALSE}
+
+# Let's start by setting some variables. For "our_country," set this to the country or place we want to pull Census data about. This can be a nation-state, a continent or a region, such as "Eastern Europe." Note that this is generally written as the name of the country.
+
+our_country <- "Ukraine"
+
+# Fill in the next 3 with your state and major city information.
+
+our_state <- "Georgia"
+
+our_state_abbreviation <-  "GA" # Make this your two-letter abbreviation
+
+our_major_city <- "Atlanta" # We'll use this to grab MSA-level data. 
+
+# Set our_data_year to whatever the year of the appropriate Census release that you want to pull from tidycensus. 
+our_data_year <- 2019
+
+# Set this to whatever Census product we want to pull data from with tidycensus. I often use acs5, for the 5-year averages of the American Community Survey, because I live and work in Georgia (the U.S. state, not the country), and I'm often asked by colleagues to pull data concerning towns with populations lower than the 60,000-person threshold for the 1-year ACS. But you can choose. To see all the options on this, check the tidycensus documentation at https://walker-data.com/tidycensus/articles/basic-usage.html#working-with-acs-data-1. 
+
+our_survey <- "acs5" %>% print()
+
+```
+
+
+```{r national_level_stats, include=FALSE, eval=TRUE, echo=FALSE}
+
+# Let's pull down the ACS variables using tidycensus. We'll be using the 2019 data release and we'll be using the ACS 5-year. 
+var19 <- load_variables(our_data_year, our_survey, cache = TRUE) %>% print()
+
+var19 %>% filter(str_detect(concept, "FOREIGN")) %>% filter(str_detect(label, "Ukr")) %>% pull(label)
+
+# Since we're posting this at the beginning of the Russian invasion of Ukraine, and we're looking for Americans born in Ukraine, let's go on and check to make sure ... Is there a category in here broken down for people born in Ukraine? Let's check ...
+var19 %>% filter(str_detect(label, substr(our_country, 1,3)))
+
+# ... And the answer is, yes, there is. There's a variable for "Estimate!!Total:!!Ukraine". So let's proceed. But you can see all the variables and possibilities for birth nations in the data here: https://censusreporter.org/tables/B04006/
+
+# Let's save as a variable the number of the table we're going to be pulling from the ACS. Table B05006 is "Place of birth for the foreign-born population in the United States." The variable for people born in Ukraine is going to be B05006_044. But we just need the table number for now. 
+our_table <- "B05006"
+
+# Let's filter the variables down to the one table we want.
+v19a <- var19 %>%  filter(str_detect(name, our_table)) %>%  print()
+
+# Pull out the variable for our chosen country
+our_country_variable <- (v19a %>% filter(str_detect(label, our_country))) %>% pull(name) %>% print()
+
+# Pull out the variable for the total population field in that table, so that we can eventually use it to calculate a percentage. The second filter, on the concept field, is there to discard the table that applies to the foreign-born population of Puerto Rico (B05006PR_001)
+total_pop_variable <- v19a %>% filter(label=="Estimate!!Total:") %>% filter(str_detect(concept, "UNITED STATES")) %>% pull(name) %>% print()
+
+# Save a list of the two variables we want: the number of people born in our chosen country, and the total population variable. 
+varlist <- c(our_country_variable, total_pop_variable) %>% print()
+
+# Now let's ping the Census API using tidycensus and download the data for our variables for national-level statistics. 
+us_countries <- get_acs(geography = "us", year = our_data_year, survey = paste0(our_survey), variables = varlist, geometry = FALSE)  %>%  print()
+
+# Save the variable labels as a small table so we can join it to our us_countries table in a minute.
+variable_labels <- data.frame(v19a[,c(1:2)]) %>%  print()
+
+# Rename the columns in variable_labels so that they are easier to fool with.
+colnames(variable_labels) <- c("name", "variable") %>%  print()
+
+# Merge (R's word for a SQL join) us_countries with the variable_labels table. 
+us_countries_totals <- merge(x = us_countries, y=variable_labels, by.x = "variable", by.y = "name", all = FALSE) %>%  print()
+
+# Save the total American population as a variable 
+us_total_pop <- us_countries_totals %>% rename(label=variable.y) %>%  filter(label=="Estimate!!Total:") %>%  pull(estimate) %>%  print()
+
+# Save the total number of people in the U.S. who are born in our chosen country and save it as a variable.
+us_total_our_country <- us_countries_totals %>% rename(label=variable.y) %>%  filter(str_detect(label, our_country)) %>% pull(estimate) %>% print()
+
+# Calculate the percentage of people in the U.S. who reported being born in our chosen country. 
+pct_us_total_pop_who_were_born_in_our_country <- ((us_total_our_country/us_total_pop)*100) %>% print()
+
+# Create our summary phrase for national-level statistics. 
+us_summary_phrase <- paste0("The total number of Americans who reported having been born in Ukraine is ", prettyNum(us_total_our_country, big.mark=","), ". That equals about ", round(pct_us_total_pop_who_were_born_in_our_country,digits=1), "% of the total U.S. population, according to the 2019 5-year ACS data.") %>% print()
+
+```
+
+
+```{r state_level_data, include=FALSE, eval=TRUE, echo=FALSE}
+
+# Now, let's move on to state-level numbers. 
+
+# Now let's ping the Census API using tidycensus and download the data for our variables for our state. 
+our_state_countries <- get_acs(geography = "state", year = our_data_year, survey = our_survey, variables = varlist, geometry = FALSE)  %>% filter(str_detect(NAME, our_state)) %>% print()
+
+# Merge our_state_countries with our table of variable label names from earlier. 
+our_state_countries_totals <- merge(x = our_state_countries, y=variable_labels, by.x = "variable", by.y = "name", all = FALSE) %>%  print()
+
+# Save the total state population as a variable. 
+our_state_total_pop <- our_state_countries_totals %>% rename(label=variable.y) %>%  filter(label=="Estimate!!Total:") %>%  pull(estimate) %>%  print()
+
+# Save the total number of people in our state who reported being born in our chosen country.
+our_state_total_our_country <- our_state_countries_totals %>% rename(label=variable.y) %>%  filter(str_detect(label, our_country)) %>% pull(estimate)  %>% print()
+
+# Calculate the percentage.
+pct_our_state_total_pop_who_were_born_in_our_country <- ((our_state_total_our_country/our_state_total_pop)*100) %>% print()
+
+# Create our summary for state-level data. 
+our_state_summary <- paste0("The total number of people in ", our_state, " who reported being born in ", our_country, " is ", prettyNum(our_state_total_our_country, big.mark=","), ". That represents ", round(pct_our_state_total_pop_who_were_born_in_our_country, 1), "% of ", our_state, "'s total population, according to the 5-year ACS data.") %>% print()
+
+```
+
+```{r msa_level_data, include=FALSE, eval=TRUE, echo=FALSE}
+
+# Now, let's move on to data at the level of metropolitan (or micropolitan) statistical areas, or MSA's. 
+
+# Now let's ping the Census API using tidycensus and download the data for our variables. 
+our_msa_countries <- get_acs(geography = "metropolitan statistical area/micropolitan statistical area", year = our_data_year, survey = our_survey, variables = varlist, geometry = FALSE)  %>% filter(str_detect(NAME, paste0(" ", our_state_abbreviation, " "))) %>% filter(str_detect(NAME, our_major_city)) %>% print()
+
+# Merge with our table of variable label names. 
+our_msa_countries_totals <- merge(x = our_msa_countries, y=variable_labels, by.x = "variable", by.y = "name", all = FALSE) %>%  print()
+
+# Save the total MSA population as a variable. 
+our_msa_total_pop <- our_msa_countries_totals %>% rename(label=variable.y) %>%  filter(label=="Estimate!!Total:") %>%  pull(estimate) %>%  print()
+
+# Save the number of people in our MSA who reported being of born in our country
+our_msa_total_our_country <- our_msa_countries_totals %>% rename(label=variable.y) %>%  filter(str_detect(label, our_country)) %>% pull(estimate) %>% print()
+
+# Calculate the percentage
+pct_our_msa_total_pop_who_were_born_in_our_country <- ((our_msa_total_our_country/our_msa_total_pop)*100) %>% print()
+
+# Create our summary paragraph for MSA-level data. 
+our_msa_summary <- paste0("The total number of people living in the ", our_major_city, " MSA who reported being born in ", our_country, " is ", prettyNum(our_msa_total_our_country, big.mark=","), ". This represents ", round(pct_our_msa_total_pop_who_were_born_in_our_country,1), "% of the total population of the MSA, according to the 5-year ACS data.") %>% print()
+
+
+```
+
+```{r counties, include=FALSE, eval=TRUE, echo=FALSE}
+
+# Now, let's move on to data at the level of counties. tidycensus and the Census API allow us to pull down the data for all the counties in the U.S. at once (for all 50 states, in other words), but we'll filter down to just the counties in our state.
+
+# Now let's ping the Census API using tidycensus and download the data for our variables. 
+all_us_counties_countries <- get_acs(geography = "county", year = our_data_year, survey = our_survey, variables = varlist, geometry = FALSE)  %>% print()
+
+# Merge with our table of variable label names. 
+counties_countries_totals <- merge(x = all_us_counties_countries, y=variable_labels, by.x = "variable", by.y = "name", all = FALSE) %>% rename(label="variable.y") %>%  print()
+
+# Do a double filter with dplyr to grab the variables for both the total population and the population who are were born in our chosen country.
+counties_total_our_country1 <- (counties_countries_totals %>% filter(label=="Estimate!!Total:" | str_detect(label, our_country))) %>% print()
+
+# Do pivot_wider on the table we just made to make the total population one column and the population born in our country a second column. To do this, we get rid of the GEOID, moe and variable fields. 
+counties_total_our_country2 <- counties_total_our_country1 %>% select(-GEOID, -moe, -variable) %>% pivot_wider(names_from=label, values_from = estimate, names_sep="_") %>%  rename(our_countrypop_est=(counties_countries_totals %>% filter(str_detect(label, our_country)) %>% group_by(label) %>% summarize(count=n()) %>% pull(label)), total_pop_est="Estimate!!Total:") %>% print()
+
+# Create a new column that is percentage of population born in our chosen country. 
+counties_total_our_country2$pct_our_counties_total_pop_who_were_born_in_our_country <- ((((counties_total_our_country2$our_countrypop_est)/(counties_total_our_country2$total_pop_est))*100)) %>% print()
+
+# Create a top 10 list for counties in our state with the highest percentages of people born in our chosen country. 
+top_10_counties_with_highest_pcts_of_our_country <- (counties_total_our_country2 %>% filter(str_detect(NAME, our_state)) %>% arrange(-pct_our_counties_total_pop_who_were_born_in_our_country) %>% slice_head(n= 10)) %>% print()
+
+# Formulate the top 10 we just made into a neat table with knitR's kable command
+knitr::kable(top_10_counties_with_highest_pcts_of_our_country, col.names=c("County name", "Total population estimate", paste0("Estimated population born in ", our_country), paste0("Percent of total population born in ", our_country)), row.names = FALSE, digits=1, caption=paste0("The 10 counties in ", our_state, " with the highest percentages of population born in ", our_country))
+
+# Now create a top 10 of the counties in our state with the highest raw numbers of residents born in our chosen country.
+top_10_counties_with_largest_total_pops_of_our_country <- (counties_total_our_country2 %>% filter(str_detect(NAME, "Georgia")) %>% arrange(-our_countrypop_est) %>% slice_head(n=10)) %>% print()
+
+# Now, reformulate that table into a knitR kable. 
+knitr::kable(top_10_counties_with_largest_total_pops_of_our_country, col.names=c("County name", "Total population estimate", paste0("Estimated population born in ", our_country), paste0("Percent of total population born in ", our_country)), row.names = FALSE, digits=1, caption=paste0("The 10 counties in ", our_state, " with the highest total populations born in ", our_country))
+
+
+```
+
+```{r cities_or_places, include=FALSE, eval=TRUE, echo=FALSE}
+
+# Now, let's move on to data at the level of cities, or what the Census Bureau calls "places." (Some places are not actually incorporated cities, so be careful about that.)
+
+# Now let's ping the Census API using tidycensus and download the data about our variables. 
+our_cities_countries <- get_acs(geography = "place", year = our_data_year, survey = our_survey, state=our_state_abbreviation, variables = varlist, geometry = FALSE)  %>% print()
+
+# Merge with our table of variable label names. 
+cities_countries_totals <- merge(x = our_cities_countries, y=variable_labels, by.x = "variable", by.y = "name", all = FALSE) %>% rename(label="variable.y") %>%  print()
+
+# Do a double filter with dplyr to grab the variables for both the total population and the population who were born in our chosen country.
+cities_total_our_country1 <- (cities_countries_totals %>% filter(label=="Estimate!!Total:" | str_detect(label, our_country))) %>% print()
+
+# Do pivot_wider on the table we just made to make the total population one column and the population born in our chosen country in a second column. To do this, we get rid of the GEOID, moe and variable fields. 
+cities_total_our_country2 <- cities_total_our_country1 %>% select(-GEOID, -moe, -variable) %>% pivot_wider(names_from=label, values_from = estimate, names_sep="_") %>%  rename(our_countrypop_est=(cities_countries_totals %>% filter(str_detect(label, our_country)) %>% group_by(label) %>% summarize(count=n()) %>% pull(label)), total_pop_est="Estimate!!Total:") %>% print()
+
+# Create a new column that is percentage of population born in our chosen country. 
+cities_total_our_country2$pct_our_cities_total_pop_who_were_born_in_our_country <- ((((cities_total_our_country2$our_countrypop_est)/(cities_total_our_country2$total_pop_est))*100)) %>% print()
+
+# Create a top 10 list for cities with the highest percentages of people of people born in our chosen country. 
+top_10_cities_with_highest_pcts_of_our_country <- (cities_total_our_country2 %>% arrange(-pct_our_cities_total_pop_who_were_born_in_our_country) %>% slice_head(n= 10)) %>% print()
+
+# Formulate the top 10 we just made into a neat table with knitR's kable command
+knitr::kable(top_10_cities_with_highest_pcts_of_our_country, col.names=c("City or place name", "Total population estimate", paste0("Estimated population born in ", our_country), paste0("Percent of total population born in ", our_country)), row.names = FALSE, digits=1, caption=paste0("The 10 places in ", our_state, " with the highest percentages of population born in ", our_country))
+
+# Now create a top 10 of the cities with the highest raw numbers of residents born in our chosen country.
+top_10_cities_with_largest_total_pops_of_our_country <- (cities_total_our_country2 %>% arrange(-our_countrypop_est) %>% slice_head(n=10)) %>% print()
+
+# Now, reformulate that table into a knitR kable. 
+knitr::kable(top_10_cities_with_largest_total_pops_of_our_country, col.names=c("City or place name", "Total population estimate", paste0("Estimated population born in ", our_country), paste0("Percent of total population born in ", our_country)), row.names = FALSE, digits=1, caption=paste0("The 10 places in ", our_state, " with the highest total populations born in ", our_country))
+
+
+```
+#30
+
