@@ -50,8 +50,6 @@ getwd()
 # If you want to change your working directory, you can do it here. Paste in your file path between these quote marks first ... But I'll otherwise leave this commented-out.
 #base_wd <- "Paste/In/Your/File/Path/Here/And/Dont/Forget/to/Switch/Your/Backslashes/to/Forwardslashes/or/Else/R/CAnt/Read/It"
 
-base_wd <- "F:/Users/JP/Documents/work/ligaya_phillipines_demographics_story"
-
 # And this next line would actually change your working directory to whatever you've stored in base_wd. 
 setwd(base_wd)
 
